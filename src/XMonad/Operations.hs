@@ -25,8 +25,12 @@ import Data.Monoid          (Endo(..))
 import Data.List            (nub, (\\), find)
 import Data.Bits            ((.|.), (.&.), complement, testBit)
 import Data.Ratio
+import Data.Word            (Word32)
+import Data.Int             (Int32)
 import qualified Data.Map as M
 import qualified Data.Set as S
+
+import Foreign.C.Types      (CInt(..), CUInt(..))
 
 import Control.Applicative
 import Control.Arrow (second)
@@ -39,6 +43,7 @@ import System.Directory
 import System.Posix.Process (executeFile)
 import Graphics.X11.Xlib
 import Graphics.X11.Xinerama (getScreenInfo)
+import Graphics.X11.Xrandr
 import Graphics.X11.Xlib.Extras
 
 -- ---------------------------------------------------------------------
@@ -278,10 +283,30 @@ containedIn r1@(Rectangle x1 y1 w1 h1) r2@(Rectangle x2 y2 w2 h2)
 nubScreens :: [Rectangle] -> [Rectangle]
 nubScreens xs = nub . filter (\x -> not $ any (x `containedIn`) xs) $ xs
 
+-- | Gets all CRTC (the equivalent of "xmonad-screens") of the default screen
+getCRTCRects :: Display -> IO [Rectangle]
+getCRTCRects display =
+    let uIntToWord :: CUInt -> Word32
+        uIntToWord (CUInt w) = fromInteger $ toInteger w
+        intToInt :: CInt -> Int32
+        intToInt (CInt w) = fromInteger $ toInteger w
+        root = defaultRootWindow display
+        getRect crtcInfo = Rectangle (intToInt   $ xrr_ci_x      crtcInfo)
+                                     (intToInt   $ xrr_ci_y      crtcInfo)
+                                     (uIntToWord $ xrr_ci_width  crtcInfo)
+                                     (uIntToWord $ xrr_ci_height crtcInfo)
+    in do
+        maybeScreenResources <- xrrGetScreenResources display root
+        case maybeScreenResources of
+            Nothing  -> return []
+            Just res -> do
+                rects <- mapM (xrrGetCrtcInfo display res) $ xrr_sr_crtcs res
+                return $ map getRect $ catMaybes rects
+
 -- | Cleans the list of screens according to the rules documented for
 -- nubScreens.
 getCleanedScreenInfo :: MonadIO m => Display -> m [Rectangle]
-getCleanedScreenInfo = io .  fmap nubScreens . getScreenInfo
+getCleanedScreenInfo = io . fmap nubScreens . getCRTCRects
 
 -- | rescreen.  The screen configuration may have changed (due to
 -- xrandr), update the state and refresh the screen, and reset the gap.
